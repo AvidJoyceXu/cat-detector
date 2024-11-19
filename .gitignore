@@ -1,0 +1,5 @@
+*.pdf
+*.md
+ckpt/
+benchmarks_v2/
+provided-examples/
