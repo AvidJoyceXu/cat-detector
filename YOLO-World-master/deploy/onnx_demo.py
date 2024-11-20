@@ -37,7 +37,16 @@ animals_mistaken_for_cats = [
     "bear",
     "bread",
     "decoration",
-    "monkey"
+    "monkey",
+    "bird",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "toy",
+    "giraffe",
+    "mouse"
 ]
 
 class LabelAnnotator(sv.LabelAnnotator):
