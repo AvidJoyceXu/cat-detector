@@ -3,8 +3,6 @@
 ckpt/
 NMS/
 __pycache__/
-*.jpg
-*.png
 output/
 YOLO-World/onnx_outputs*
 
