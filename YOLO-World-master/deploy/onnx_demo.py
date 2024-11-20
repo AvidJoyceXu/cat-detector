@@ -9,8 +9,12 @@ import supervision as sv
 import onnxruntime as ort
 from mmengine.utils import ProgressBar
 
+from PIL import Image
+
+import clip
 try:
     import torch
+
     from torchvision.ops import nms
 except Exception as e:
     print(e)
@@ -18,6 +22,23 @@ except Exception as e:
 BOUNDING_BOX_ANNOTATOR = sv.BoundingBoxAnnotator(thickness=1)
 MASK_ANNOTATOR = sv.MaskAnnotator()
 
+animals_mistaken_for_cats = [
+    "cat with short, triangular ears",
+    "cartoon cat",
+    "drawn cat",
+    "rabbit with long, upright ears and red eyes",
+    "owl",
+    "fox with reddish-brown fur",
+    "raccoon",
+    "dog",
+    "koala",
+    "lion",
+    "tiger",
+    "bear",
+    "bread",
+    "decoration",
+    "monkey"
+]
 
 class LabelAnnotator(sv.LabelAnnotator):
 
@@ -76,14 +97,15 @@ def preprocess(image, size=(640, 640)):
 
 
 def visualize(image, bboxes, labels, scores, texts):
-    detections = sv.Detections(xyxy=bboxes, class_id=labels, confidence=scores)
-    labels = [
-        f"{texts[class_id][0]} {confidence:0.2f}" for class_id, confidence in
-        zip(detections.class_id, detections.confidence)
-    ]
+    if len(bboxes) > 0:
+        detections = sv.Detections(xyxy=bboxes, class_id=labels, confidence=scores)
+        labels = [
+            f"{texts[class_id][0]} {confidence:0.2f}" for class_id, confidence in
+            zip(detections.class_id, detections.confidence)
+        ]
 
-    image = BOUNDING_BOX_ANNOTATOR.annotate(image, detections)
-    image = LABEL_ANNOTATOR.annotate(image, detections, labels=labels)
+        image = BOUNDING_BOX_ANNOTATOR.annotate(image, detections)
+        image = LABEL_ANNOTATOR.annotate(image, detections, labels=labels)
     return image
 
 
@@ -115,10 +137,56 @@ def inference(ort_session,
     bboxes[:, 1::2] = np.clip(bboxes[:, 1::2], 0, h)
     bboxes = bboxes.round().astype('int')
 
+    bboxes, scores = cat_postprocess(ori_image, bboxes, scores)
+    labels = labels[:len(bboxes)] # Keep the number of labels the same as predicted boxes
+
     image_out = visualize(ori_image, bboxes, labels, scores, texts)
     cv2.imwrite(osp.join(output_dir, osp.basename(image_path)), image_out)
     return image_out
 
+def cat_postprocess(ori_image, bboxes, scores, labels=animals_mistaken_for_cats, thres=1):
+    '''
+    Use the bboxes to crop the image, and let CLIP to determine whether it is a cat.
+    '''
+    print("Postprocessing with CLIP")
+    device = "cuda" if torch.cuda.is_available() else "mps"
+    model, preprocess = clip.load("ViT-B/32", device=device)
+
+    valid_bboxes = []
+    valid_scores = []
+
+    for bbox, score in zip(bboxes, scores):
+        if score > thres: # YOLO-world is pretty confidence, no need to further check
+            valid_bboxes.append(bbox)
+            valid_scores.append(score)
+            continue
+        x1, y1, x2, y2 = bbox
+        cropped_img = ori_image[y1:y2, x1:x2]
+        pil_img = Image.fromarray(cropped_img[:, :, ::-1])
+        pil_img.save("dbg.png")
+        image = preprocess(pil_img).unsqueeze(0).to(device)
+        text = clip.tokenize(labels).to(device)
+
+        with torch.no_grad():
+            logits_per_image, logits_per_text = model(image, text)
+            probs = logits_per_image.softmax(dim=-1)[0].cpu().numpy()
+
+            print("probs", probs)
+
+            label = labels[np.argmax(probs)]
+            if label.startswith('cat'):
+                valid_bboxes.append(bbox)
+                valid_scores.append(score)
+
+    # NMS with only one class (the cat class)
+    if len(valid_bboxes) > 0:
+        bboxes_tensor = torch.tensor(valid_bboxes, dtype=torch.float32)
+        scores_tensor = torch.tensor(valid_scores, dtype=torch.float32)
+        keep = nms(bboxes_tensor, scores_tensor, iou_threshold=0.5)
+        valid_bboxes = bboxes_tensor[keep].numpy()
+        valid_scores = scores_tensor[keep].numpy()
+
+    return np.array(valid_bboxes), np.array(valid_scores)
 
 def inference_with_postprocessing(ort_session,
                                   image_path,
@@ -137,23 +205,25 @@ def inference_with_postprocessing(ort_session,
     results = ort_session.run(["scores", "boxes"], {"images": input_ort})
     scores, bboxes = results
     # move numpy array to torch
-    ori_scores = torch.from_numpy(scores[0]).to('cuda:0')
-    ori_bboxes = torch.from_numpy(bboxes[0]).to('cuda:0')
+    ori_scores = torch.from_numpy(scores[0]).to('mps')
+    ori_bboxes = torch.from_numpy(bboxes[0]).to('mps')
 
     scores_list = []
     labels_list = []
     bboxes_list = []
     # class-specific NMS
-    for cls_id in range(len(texts)):
-        cls_scores = ori_scores[:, cls_id]
-        labels = torch.ones(cls_scores.shape[0], dtype=torch.long) * cls_id
-        keep_idxs = nms(ori_bboxes, cls_scores, iou_threshold=nms_thr)
-        cur_bboxes = ori_bboxes[keep_idxs]
-        cls_scores = cls_scores[keep_idxs]
-        labels = labels[keep_idxs]
-        scores_list.append(cls_scores)
-        labels_list.append(labels)
-        bboxes_list.append(cur_bboxes)
+    # for cls_id in range(len(texts)):
+
+    cls_scores = ori_scores[:]
+    labels = torch.ones(cls_scores.shape[0], dtype=torch.long)
+    keep_idxs = nms(ori_bboxes, cls_scores, iou_threshold=nms_thr)
+    cur_bboxes = ori_bboxes[keep_idxs]
+    cls_scores = cls_scores[keep_idxs]
+    labels = labels.to('mps')
+    labels = labels[keep_idxs]
+    scores_list.append(cls_scores)
+    labels_list.append(labels)
+    bboxes_list.append(cur_bboxes)
 
     scores = torch.cat(scores_list, dim=0)
     labels = torch.cat(labels_list, dim=0)
