@@ -24,8 +24,8 @@ MASK_ANNOTATOR = sv.MaskAnnotator()
 
 animals_mistaken_for_cats = [
     "cat with short, triangular ears",
-    "cartoon cat",
-    "drawn cat",
+    "cartoon pattern",
+    "drawings",
     "rabbit with long, upright ears and red eyes",
     "owl",
     "fox with reddish-brown fur",
@@ -36,14 +36,12 @@ animals_mistaken_for_cats = [
     "tiger",
     "bear",
     "bread",
-    "decoration",
     "monkey",
     "bird",
     "horse",
     "sheep",
     "cow",
     "elephant",
-    "bear",
     "toy",
     "giraffe",
     "mouse"
