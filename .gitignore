@@ -1,11 +1,10 @@
 *.pdf
 *.md
 ckpt/
-benchmarks_v2/
 NMS/
 __pycache__/
 *.jpg
 *.png
 output/
 YOLO-World/onnx_outputs*
-provided-examples/
+
