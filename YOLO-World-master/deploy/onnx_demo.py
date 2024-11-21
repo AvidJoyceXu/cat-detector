@@ -11,6 +11,8 @@ from mmengine.utils import ProgressBar
 
 from PIL import Image
 
+import pandas
+
 import clip
 try:
     import torch
@@ -147,9 +149,13 @@ def inference(ort_session,
     bboxes, scores = cat_postprocess(ori_image, bboxes, scores)
     labels = labels[:len(bboxes)] # Keep the number of labels the same as predicted boxes
 
+    if len(bboxes) == 0:
+        image_path = image_path + "_no_cat.png"
+
     image_out = visualize(ori_image, bboxes, labels, scores, texts)
     cv2.imwrite(osp.join(output_dir, osp.basename(image_path)), image_out)
-    return image_out
+
+    return image_out, len(bboxes), image_path
 
 def cat_postprocess(ori_image, bboxes, scores, labels=animals_mistaken_for_cats, thres=1):
     '''
@@ -170,7 +176,7 @@ def cat_postprocess(ori_image, bboxes, scores, labels=animals_mistaken_for_cats,
         x1, y1, x2, y2 = bbox
         cropped_img = ori_image[y1:y2, x1:x2]
         pil_img = Image.fromarray(cropped_img[:, :, ::-1])
-        pil_img.save("dbg.png")
+        # pil_img.save("dbg.png")
         image = preprocess(pil_img).unsqueeze(0).to(device)
         text = clip.tokenize(labels).to(device)
 
@@ -178,7 +184,7 @@ def cat_postprocess(ori_image, bboxes, scores, labels=animals_mistaken_for_cats,
             logits_per_image, logits_per_text = model(image, text)
             probs = logits_per_image.softmax(dim=-1)[0].cpu().numpy()
 
-            print("probs", probs)
+            # print("probs", probs)
 
             label = labels[np.argmax(probs)]
             if label.startswith('cat'):
@@ -302,11 +308,25 @@ def main():
     else:
         inference_func = inference_with_postprocessing
 
+    cat_numbers = []
+    image_names = []
     for img in images:
-        inference_func(ort_session, img, texts, output_dir=output_dir)
+        _, number, path = inference_func(ort_session, img, texts, output_dir=output_dir)
+
+        cat_numbers.append(number)
+        image_names.append(path)
+
         progress_bar.update()
+
     print("Finish inference")
 
+    # Create a DataFrame to store the results
+    results_df = pandas.DataFrame({
+        'Image': image_names,
+        'Cat Count': cat_numbers
+    })
 
+    print(results_df)
+    
 if __name__ == "__main__":
     main()
